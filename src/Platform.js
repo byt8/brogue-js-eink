@@ -21,14 +21,11 @@ function plotChar(char, x, y, fr, fg, fb, br, bg, bb) {
   const ctx = SCREEN.ctx;
   const dpr = SCREEN.devicePixelRatio;
 
-  // Quantise Brogue's colour to the 4-tone paper-first palette.
-  const bgTone = einkTone(br, bg, bb);
-  let fgTone = einkTone(fr, fg, fb);
-  if (char && char !== ' ') {
-    fgTone = einkGuard(fgTone, bgTone, char);
-  }
+  // One decision for tone pair and typography: UI copy is set in ink or
+  // inverted, at a weight that stands in for Brogue's colour hierarchy.
+  const style = einkCellStyle(x, y, fr, fg, fb, br, bg, bb, char);
 
-  ctx.fillStyle = einkToneColor(bgTone);
+  ctx.fillStyle = einkToneColor(style.bgTone);
   ctx.fillRect(
     rect.x * dpr,
     rect.y * dpr,
@@ -37,12 +34,15 @@ function plotChar(char, x, y, fr, fg, fb, br, bg, bb) {
   );
 
   if (char && char !== ' ') {
-    einkUseFont(einkFontPxFor(x, y));
-    ctx.fillStyle = einkToneColor(fgTone);
+    einkUseFont(einkFontPxFor(x, y), style.bold, style.italic);
+    ctx.fillStyle = einkToneColor(style.fgTone);
     // Snap glyphs to integer device pixels to minimise anti-aliased fringes.
     const tx = Math.round((rect.x + rect.w * 0.5) * dpr);
     const ty = Math.round((rect.y + rect.h * 0.5) * dpr);
     ctx.fillText(char, tx, ty);
+    if (style.underline) {
+      einkDrawUnderline(rect, style.fgTone, dpr);
+    }
   }
 }
 

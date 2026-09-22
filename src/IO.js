@@ -1741,6 +1741,11 @@ function plotCharWithColor(inputChar, xLoc, yLoc, /* color */ cellForeColor, /* 
 		return;
 	}
 
+	// Record whether this cell is about to hold chrome or terrain. Drawing
+	// happens much later, in commitDraws, with no idea which of the two wrote
+	// this cell last -- so the ownership is banked here, at the write.
+	einkMarkChrome(xLoc, yLoc, EINK_OVERLAY_TEXT);
+
   // assureCosmeticRNG();
 
 	foreRand = cosmetic_range(0, cellForeColor.rand);
@@ -1987,13 +1992,29 @@ function colorFromComponents( rgb /* char[3] */) {
 // draws overBuf over the current display with per-cell pseudotransparency as specified in overBuf.
 // If previousBuf is not null, it gets filled with the preexisting display for reversion purposes.
 function overlayDisplayBuffer( overBuf /* cellDisplayBuffer[COLS][ROWS] */,  previousBuf /* cellDisplayBuffer[COLS][ROWS]*/) {
-	let i, j;
-	let foreColor, backColor, tempColor;
-	let character;
-
 	if (previousBuf) {
 		copyDisplayBuffer(previousBuf, displayBuffer);
 	}
+
+	// Everything an overlay paints is chrome, whatever region it covers: an
+	// inventory page or a help screen spread across the map is still UI text,
+	// and must not inherit the map's grey terrain palette.
+	const einkOuterOverlay = EINK_OVERLAY_TEXT;
+	EINK_OVERLAY_TEXT = true;
+	try {
+		einkPlotOverlayCells(overBuf);
+	} finally {
+		EINK_OVERLAY_TEXT = einkOuterOverlay;
+	}
+}
+
+
+// The cell loop of overlayDisplayBuffer, split out so the overlay flag is
+// restored even if a malformed buffer throws.
+function einkPlotOverlayCells(overBuf) {
+	let i, j;
+	let foreColor, backColor, tempColor;
+	let character;
 
 	for (i=0; i<COLS; i++) {
 		for (j=0; j<ROWS; j++) {

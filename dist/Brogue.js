@@ -1,6 +1,6 @@
 /*
 	This is Brogue.js, A simple JS roguelike micro-framework for developers new to programming and or JS.
-	Version 1.7.5, generated on Tue Sep 22 08:24:05 BST 2026.
+	Version 1.7.5, generated on Tue Sep 22 10:21:19 BST 2026.
 */
 /////////////////////////
 // Brogue.js
@@ -4133,6 +4133,9 @@ function createBlobOnGrid(grid,
  *  - Quantises Brogue's 0-100 colour triplets into a 4-tone, paper-first
  *    palette (#fff / #aaa / #555 / #000) so the game reads cleanly on an
  *    e-ink display without colour.
+ *  - Replaces Brogue's colour-based text hierarchy with a typographic one:
+ *    in the UI, emphasis is carried by weight, slant, rule and inversion at
+ *    full ink-on-paper contrast, never by grey.
  *  - Lays the cells out in a non-uniform grid: the sidebar, message band
  *    and bottom band use compact "chrome" cells, while the dungeon map
  *    gets larger cells fitted to its own fixed pixel rectangle.
@@ -4180,6 +4183,34 @@ const EINK_MAP_H = DROWS;                     // 29 map rows
 const EINK_CHROME_BOTTOM_ROWS = 2;            // flavor text + menu bar
 const EINK_CHROME_ROW_COUNT = EINK_MAP_Y0 + EINK_CHROME_BOTTOM_ROWS; // 5
 
+// Set while overlayDisplayBuffer paints a dialog. Dialogs cover the map, but
+// they are chrome: their text keeps the UI treatment instead of the terrain
+// one, so a grey inventory row cannot reappear through the map branch.
+var EINK_OVERLAY_TEXT = false;
+
+// Which cells currently hold chrome rather than terrain. A dialog is painted
+// onto the screen while EINK_OVERLAY_TEXT is set, but those same cells get
+// re-plotted later, straight from displayBuffer, by ordinary refreshes -- with
+// nobody around to say they are still dialog. So each cell remembers.
+var EINK_CHROME_CELL = null;
+
+function einkMarkChrome(x, y, on) {
+    if (!EINK_CHROME_CELL) {
+        EINK_CHROME_CELL = [];
+        for (let i = 0; i < COLS; i++) {
+            EINK_CHROME_CELL[i] = [];
+            for (let j = 0; j < ROWS; j++) {
+                EINK_CHROME_CELL[i][j] = false;
+            }
+        }
+    }
+    EINK_CHROME_CELL[x][y] = on;
+}
+
+function einkIsChromeCell(x, y) {
+    return !!(EINK_CHROME_CELL && EINK_CHROME_CELL[x] && EINK_CHROME_CELL[x][y]);
+}
+
 
 // ---- colour quantisation ------------------------------------------------
 
@@ -4222,6 +4253,96 @@ function einkGuard(fgTone, bgTone, char) {
     return fgTone;
 }
 
+
+// ---- UI typography ------------------------------------------------------
+//
+// Brogue ranks text by colour: white for the newest message, gray as it
+// ages, darkGray for labels, hints and flavour text. Quantised onto paper
+// that leaves most UI copy sitting on #555 and #aaa -- legible on a
+// backlit screen, washed out on e-ink, where a light grey glyph on white
+// has barely a tenth of the contrast of ink.
+//
+// So in the UI we stop ranking text by luminance and rank it by type
+// instead, always at full ink-on-paper contrast:
+//
+//   brightest  -> bold              values, item names, the newest message
+//   mid        -> regular           ordinary body text, labels
+//   dimmest    -> italic            hints, flavour, aged messages
+//   inverted   -> inverse, bold     paper on an ink block, as Brogue had it
+//   alarming   -> bold + underline  Brogue's reds
+//   warm       -> bold              Brogue's golds and yellows
+//
+// Map cells are deliberately exempt: down there tone is terrain, not
+// emphasis, and flattening the greys would cost the floor/wall reading.
+
+// Classify a Brogue 0-100 colour by hue, ignoring its brightness. The port
+// signals meaning with a dominant channel (red for danger, gold for items,
+// green/blue for good news), so a dominant-channel test is enough and is
+// robust to the cosmetic per-frame colour drift.
+function einkAccent(fr, fg, fb) {
+    const mx = Math.max(fr, fg, fb), mn = Math.min(fr, fg, fb);
+    if (mx - mn < 20) return '';                      // grey: no hue to read
+    if (fr === mx && fr > fg * 1.2) return 'alarm';   // red: danger, damage
+    if (fb === mn && fr >= fg * 0.8) return 'warm';   // red + green, no blue
+    return '';
+}
+
+// The whole per-cell decision, in one place: which two tones to paint, and
+// whether to set the glyph in bold, italic or underlined.
+// Returns { bgTone, fgTone, bold, italic, underline }.
+function einkCellStyle(x, y, fr, fg, fb, br, bg, bb, char) {
+    const glyph = !!(char && char !== ' ');
+    const bgTone = einkTone(br, bg, bb);
+    let fgTone = einkTone(fr, fg, fb);
+
+    if (!glyph) {
+        // A surface, not text: keep its quantised tone so bars, borders and
+        // fills still read.
+        return { bgTone: bgTone, fgTone: fgTone, bold: false, italic: false, underline: false };
+    }
+
+    if (einkIsMapCell(x, y)) {
+        // Map: tone is terrain (floor, wall, water, unlit stone). Keep the
+        // grey scale, but never let a glyph sit a single step from its own
+        // background -- at these sizes that is simply invisible on e-ink.
+        fgTone = einkGuard(fgTone, bgTone, char);
+        if (Math.abs(fgTone - bgTone) < 2) {
+            fgTone = (bgTone >= 2) ? Math.max(0, bgTone - 2) : Math.min(3, bgTone + 2);
+        }
+        return { bgTone: bgTone, fgTone: fgTone, bold: false, italic: false, underline: false };
+    }
+
+    // ---- UI / chrome text ----
+    // Brogue lit this cell one way round or the other. Keep the direction
+    // (so highlights stay highlighted) but take it all the way to ink and
+    // paper, so no UI copy is ever grey.
+    const inverted = bgTone > fgTone;
+    const level = inverted ? bgTone : fgTone;   // 3 = Brogue's brightest
+    const accent = einkAccent(fr, fg, fb);
+
+    return {
+        bgTone: inverted ? 3 : 0,
+        fgTone: inverted ? 0 : 3,
+        bold: level >= 3 || accent === 'alarm' || accent === 'warm',
+        italic: level <= 1,
+        underline: accent === 'alarm'
+    };
+}
+
+// Rule under a glyph, for text we want to read as marked or urgent.
+function einkDrawUnderline(rect, fgTone, dpr) {
+    const ctx = SCREEN.ctx;
+    const thickness = Math.max(1, Math.round(dpr));
+    const inset = Math.max(1, Math.round(rect.w * 0.15));
+    ctx.fillStyle = einkToneColor(fgTone);
+    ctx.fillRect(
+        Math.round((rect.x + inset) * dpr),
+        Math.round((rect.y + rect.h) * dpr) - thickness,
+        Math.round((rect.w - inset * 2) * dpr),
+        thickness
+    );
+}
+
 // Post-paint pass: read the whole canvas and snap every pixel to the
 // nearest of the 4 palette levels (#fff / #aaa / #555 / #000). This removes
 // the anti-aliased fringes canvas text rendering leaves at glyph edges, so
@@ -4250,8 +4371,11 @@ function einkPosterise() {
 
 // ---- region-aware geometry ----------------------------------------------
 
-// True for the dungeon map cells (columns 21..99, rows 3..31).
+// True for the dungeon map cells (columns 21..99, rows 3..31). Cells an
+// overlay is painting -- now or on a later refresh of the same cell -- are
+// never map cells, however far over the map they sit.
 function einkIsMapCell(x, y) {
+    if (EINK_OVERLAY_TEXT || einkIsChromeCell(x, y)) return false;
     return x >= EINK_MAP_X0 && x < EINK_MAP_X0 + EINK_MAP_W
         && y >= EINK_MAP_Y0 && y < EINK_MAP_Y0 + EINK_MAP_H;
 }
@@ -4345,13 +4469,17 @@ function einkFontPxFor(x, y) {
     return Math.max(4, Math.floor(Math.min(h, w * EINK_FONT_ASPECT)));
 }
 
-// Set the canvas font only when it actually changes (cheap per-cell).
-function einkUseFont(px) {
+// Set the canvas font only when it actually changes (cheap per-cell). Bold
+// and italic are synthesised by the browser from the monospace family, which
+// is what we want: a bolder stem reads as emphasis on e-ink, where a lighter
+// grey simply reads as a missing glyph.
+function einkUseFont(px, bold, italic) {
     const ctx = SCREEN.ctx;
-    const key = px + '|' + SCREEN.font;
+    const key = px + '|' + (bold ? 'b' : '') + (italic ? 'i' : '') + '|' + SCREEN.font;
     if (SCREEN._fontKey !== key) {
         SCREEN._fontKey = key;
-        ctx.font = Math.round(px * SCREEN.devicePixelRatio) + 'px ' + SCREEN.font;
+        ctx.font = (italic ? 'italic ' : '') + (bold ? 'bold ' : '')
+                 + Math.round(px * SCREEN.devicePixelRatio) + 'px ' + SCREEN.font;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
     }
@@ -4590,14 +4718,11 @@ function plotChar(char, x, y, fr, fg, fb, br, bg, bb) {
   const ctx = SCREEN.ctx;
   const dpr = SCREEN.devicePixelRatio;
 
-  // Quantise Brogue's colour to the 4-tone paper-first palette.
-  const bgTone = einkTone(br, bg, bb);
-  let fgTone = einkTone(fr, fg, fb);
-  if (char && char !== ' ') {
-    fgTone = einkGuard(fgTone, bgTone, char);
-  }
+  // One decision for tone pair and typography: UI copy is set in ink or
+  // inverted, at a weight that stands in for Brogue's colour hierarchy.
+  const style = einkCellStyle(x, y, fr, fg, fb, br, bg, bb, char);
 
-  ctx.fillStyle = einkToneColor(bgTone);
+  ctx.fillStyle = einkToneColor(style.bgTone);
   ctx.fillRect(
     rect.x * dpr,
     rect.y * dpr,
@@ -4606,12 +4731,15 @@ function plotChar(char, x, y, fr, fg, fb, br, bg, bb) {
   );
 
   if (char && char !== ' ') {
-    einkUseFont(einkFontPxFor(x, y));
-    ctx.fillStyle = einkToneColor(fgTone);
+    einkUseFont(einkFontPxFor(x, y), style.bold, style.italic);
+    ctx.fillStyle = einkToneColor(style.fgTone);
     // Snap glyphs to integer device pixels to minimise anti-aliased fringes.
     const tx = Math.round((rect.x + rect.w * 0.5) * dpr);
     const ty = Math.round((rect.y + rect.h * 0.5) * dpr);
     ctx.fillText(char, tx, ty);
+    if (style.underline) {
+      einkDrawUnderline(rect, style.fgTone, dpr);
+    }
   }
 }
 
@@ -35322,6 +35450,11 @@ function plotCharWithColor(inputChar, xLoc, yLoc, /* color */ cellForeColor, /* 
 		return;
 	}
 
+	// Record whether this cell is about to hold chrome or terrain. Drawing
+	// happens much later, in commitDraws, with no idea which of the two wrote
+	// this cell last -- so the ownership is banked here, at the write.
+	einkMarkChrome(xLoc, yLoc, EINK_OVERLAY_TEXT);
+
   // assureCosmeticRNG();
 
 	foreRand = cosmetic_range(0, cellForeColor.rand);
@@ -35568,13 +35701,29 @@ function colorFromComponents( rgb /* char[3] */) {
 // draws overBuf over the current display with per-cell pseudotransparency as specified in overBuf.
 // If previousBuf is not null, it gets filled with the preexisting display for reversion purposes.
 function overlayDisplayBuffer( overBuf /* cellDisplayBuffer[COLS][ROWS] */,  previousBuf /* cellDisplayBuffer[COLS][ROWS]*/) {
-	let i, j;
-	let foreColor, backColor, tempColor;
-	let character;
-
 	if (previousBuf) {
 		copyDisplayBuffer(previousBuf, displayBuffer);
 	}
+
+	// Everything an overlay paints is chrome, whatever region it covers: an
+	// inventory page or a help screen spread across the map is still UI text,
+	// and must not inherit the map's grey terrain palette.
+	const einkOuterOverlay = EINK_OVERLAY_TEXT;
+	EINK_OVERLAY_TEXT = true;
+	try {
+		einkPlotOverlayCells(overBuf);
+	} finally {
+		EINK_OVERLAY_TEXT = einkOuterOverlay;
+	}
+}
+
+
+// The cell loop of overlayDisplayBuffer, split out so the overlay flag is
+// restored even if a malformed buffer throws.
+function einkPlotOverlayCells(overBuf) {
+	let i, j;
+	let foreColor, backColor, tempColor;
+	let character;
 
 	for (i=0; i<COLS; i++) {
 		for (j=0; j<ROWS; j++) {
