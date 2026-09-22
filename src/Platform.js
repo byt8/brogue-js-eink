@@ -4,7 +4,7 @@ var SCREEN = null;
 
 
 function fillBg(css) {
-    SCREEN.ctx.fillStyle = css || '#000';
+    SCREEN.ctx.fillStyle = css || EINK_PAPER;
     SCREEN.ctx.fillRect(
         0,
         0,
@@ -15,45 +15,43 @@ function fillBg(css) {
 
 
 function plotChar(char, x, y, fr, fg, fb, br, bg, bb) {
-  fr = Math.floor(fr * 2.55);
-  fg = Math.floor(fg * 2.55);
-  fb = Math.floor(fb * 2.55);
-  br = Math.floor(br * 2.55);
-  bg = Math.floor(bg * 2.55);
-  bb = Math.floor(bb * 2.55);
-
-  const backCss = `#${br.toString(16).padStart(2,'0')}${bg.toString(16).padStart(2,'0')}${bb.toString(16).padStart(2,'0')}`;
+  const rect = cellRect(x, y);
+  if (!rect) return; // map cell is paged out of view
 
   const ctx = SCREEN.ctx;
-  const tileSize = SCREEN.tileSize * SCREEN.devicePixelRatio;
+  const dpr = SCREEN.devicePixelRatio;
 
-  ctx.fillStyle = backCss;
+  // Quantise Brogue's colour to the 4-tone paper-first palette.
+  const bgTone = einkTone(br, bg, bb);
+  let fgTone = einkTone(fr, fg, fb);
+  if (char && char !== ' ') {
+    fgTone = einkGuard(fgTone, bgTone, char);
+  }
+
+  ctx.fillStyle = einkToneColor(bgTone);
   ctx.fillRect(
-    x * tileSize,
-    y * tileSize,
-    tileSize,
-    tileSize
+    rect.x * dpr,
+    rect.y * dpr,
+    rect.w * dpr,
+    rect.h * dpr
   );
 
   if (char && char !== ' ') {
-    const foreCss = `#${fr.toString(16).padStart(2,'0')}${fg.toString(16).padStart(2,'0')}${fb.toString(16).padStart(2,'0')}`;
-    const textX = x * tileSize + tileSize * 0.5;  // TODO - offsetX
-    const textY = y * tileSize + tileSize * 0.5;  // TODO - offsetY
-    ctx.fillStyle = foreCss;
-
-    ctx.fillText(
-      char,
-      textX,
-      textY
-    );
+    einkUseFont(einkFontPxFor(x, y));
+    ctx.fillStyle = einkToneColor(fgTone);
+    // Snap glyphs to integer device pixels to minimise anti-aliased fringes.
+    const tx = Math.round((rect.x + rect.w * 0.5) * dpr);
+    const ty = Math.round((rect.y + rect.h * 0.5) * dpr);
+    ctx.fillText(char, tx, ty);
   }
-
 }
 
 
 function setFont(size, name) {
+  // Font size is derived per region (see einkFontPxFor); we only keep the
+  // face name here and reset the per-cell font cache.
   SCREEN.font = name || SCREEN.font || 'monospace';
-  SCREEN.ctx.font = (size * SCREEN.devicePixelRatio) + 'px ' + SCREEN.font;
+  SCREEN._fontKey = null;
   SCREEN.ctx.textAlign = 'center';
   SCREEN.ctx.textBaseline = 'middle';
 }
@@ -98,26 +96,44 @@ function handleSilentEvent(theEvent) {
   EVENTS_QUEUE.push(theEvent);
 }
 
+let _lastPaint = 0;
+
 function animationTimer(t) {
   requestAnimationFrame(animationTimer);
 
-  if (SCREEN) {
-    let i, j;
+  if (!SCREEN) return;
 
-  	for (i=0; i<COLS; i++) {
-  		for (j=0; j<ROWS; j++) {
-  			if (displayBuffer[i][j].needsUpdate) {
-  				plotChar(displayBuffer[i][j].char, i, j,
-  						 displayBuffer[i][j].foreColorComponents[0],
-  						 displayBuffer[i][j].foreColorComponents[1],
-  						 displayBuffer[i][j].foreColorComponents[2],
-  						 displayBuffer[i][j].backColorComponents[0],
-  						 displayBuffer[i][j].backColorComponents[1],
-  						 displayBuffer[i][j].backColorComponents[2]);
-  				displayBuffer[i][j].needsUpdate = false;
-  			}
+  // Keep the player on screen when the map is zoomed.
+  einkKeepPlayerVisible();
+
+  // Coalesce bursts of small updates into at most one paint per window
+  // (fewer full-screen refreshes on e-ink).
+  if (EINK_REFRESH_MS > 0 && (t - _lastPaint) < EINK_REFRESH_MS) {
+    return;
+  }
+
+  let i, j, didPaint = false;
+
+  for (i=0; i<COLS; i++) {
+  	for (j=0; j<ROWS; j++) {
+  		if (displayBuffer[i][j].needsUpdate) {
+  			plotChar(displayBuffer[i][j].char, i, j,
+  					 displayBuffer[i][j].foreColorComponents[0],
+  					 displayBuffer[i][j].foreColorComponents[1],
+  					 displayBuffer[i][j].foreColorComponents[2],
+  					 displayBuffer[i][j].backColorComponents[0],
+  					 displayBuffer[i][j].backColorComponents[1],
+  					 displayBuffer[i][j].backColorComponents[2]);
+  			displayBuffer[i][j].needsUpdate = false;
+  			didPaint = true;
   		}
   	}
+  }
+
+  if (didPaint) {
+    _lastPaint = t;
+    einkDrawControls();
+    einkPosterise();
   }
 }
 
@@ -175,64 +191,70 @@ function handleMouseEvent(e) {
     return;
   }
 
-  let mouseX = Math.floor(e.clientX / SCREEN.mouseWidth);
-  let mouseY = Math.floor(e.clientY / SCREEN.mouseHeight);
-
   if (e.type === 'mouseleave') {
-    x = null;
-    y = null;
+    return;
   }
 
-  const time = performance.now();
+  const rect = SCREEN.canvas.getBoundingClientRect();
+  const px = e.clientX - rect.left;
+  const py = e.clientY - rect.top;
 
-  if(e.type === 'click'){
-    let theEvent = rogueEvent(MOUSE_DOWN, mouseX, mouseY);
+  if (e.type === 'click') {
+    if (einkHandleControlTap(px, py)) return;
+    const cell = cellAtPixel(px, py);
+    const time = performance.now();
+    let theEvent = rogueEvent(MOUSE_DOWN, cell.x, cell.y);
     theEvent.time = time;
     SCREEN.inputHandler(theEvent);
-    theEvent = rogueEvent(MOUSE_UP, mouseX, mouseY);
+    theEvent = rogueEvent(MOUSE_UP, cell.x, cell.y);
     theEvent.time = time;
     SCREEN.inputHandler(theEvent);
   }
   else {
-    let theEvent = rogueEvent(MOUSE_ENTERED_CELL, mouseX, mouseY);
-    theEvent.time = time;
+    const cell = cellAtPixel(px, py);
+    let theEvent = rogueEvent(MOUSE_ENTERED_CELL, cell.x, cell.y);
+    theEvent.time = performance.now();
     SCREEN.inputHandler(theEvent);
   }
 }
 
 function handleResizeEvent() {
 
-  SCREEN.tileSize = Math.min(Math.floor(window.innerWidth / COLS), Math.floor(window.innerHeight / ROWS));
-  const rect = SCREEN.canvas.getBoundingClientRect();
-  SCREEN.mouseWidth = rect.width / COLS;
-  SCREEN.mouseHeight = rect.height / ROWS;
+  const W = window.innerWidth;
+  const H = window.innerHeight;
+  const s = SCREEN;
 
-  console.log('resize', window.innerWidth, window.innerHeight, SCREEN.tileSize, SCREEN.mouseWidth, SCREEN.mouseHeight);
+  // ---- non-uniform, region-aware layout -------------------------------
+  // Uniform horizontal unit: 100 columns across the full width.
+  s.cellW_chrome = Math.max(1, Math.floor(W / COLS));
 
-  let width = COLS * SCREEN.tileSize;
-  let height = ROWS * SCREEN.tileSize;
+  // Chrome rows are tighter than map rows; scale both proportionally so
+  // the layout fills the window height.
+  const chromeH = Math.max(1, Math.floor(s.cellW_chrome * EINK_CHROME_ASPECT));
+  const mapH = Math.max(1, Math.floor(s.cellW_chrome * EINK_MAP_ASPECT));
+  const idealH = EINK_CHROME_ROW_COUNT * chromeH + EINK_MAP_H * mapH;
+  const scale = H / idealH;
 
+  s.cellH_chrome = Math.max(s.cellW_chrome, Math.floor(chromeH * scale));
+  s.cellH_map_base = Math.max(s.cellW_chrome, Math.floor(mapH * scale));
+
+  s.mapZoom = s.mapZoom || 1;
+  s.page = s.page || { x: 0, y: 0 };
+  einkApplyMapZoom(s);
+  einkCenterPageOnPlayer();
+
+  // ---- canvas backing store (device-pixel crisp, CSS-sized) ------------
   const devicePixelRatio = window.devicePixelRatio || 1;
-  if (devicePixelRatio !== 1) {
-      SCREEN.canvas.style.width = width + 'px';
-      SCREEN.canvas.style.height = height + 'px';
+  s.devicePixelRatio = devicePixelRatio;
+  s.canvas.width = Math.floor(W * devicePixelRatio);
+  s.canvas.height = Math.floor(H * devicePixelRatio);
+  s.canvas.style.width = W + 'px';
+  s.canvas.style.height = H + 'px';
 
-      width = Math.floor(width * devicePixelRatio);
-      height = Math.floor(height * devicePixelRatio);
-  }
+  setFont(s.cellH_chrome, s.font);
+  fillBg(EINK_PAPER);
 
-  SCREEN.devicePixelRatio = devicePixelRatio;
-  SCREEN.canvas.width = width;
-  SCREEN.canvas.height = height;
-
-  setFont(SCREEN.tileSize, SCREEN.font);
-  fillBg('#000');
-
-  for (let i=0; i<COLS; i++) {
-		for (let j=0; j<ROWS; j++) {
-			displayBuffer[i][j].needsUpdate = true;
-    }
-  }
+  einkRequestFullRedraw();
 
 }
 
@@ -360,10 +382,11 @@ async function launch() {
   canvas.addEventListener('mouseenter', handleMouseEvent);
   canvas.addEventListener('mouseleave', handleMouseEvent);
   canvas.addEventListener('click', handleMouseEvent);
+  canvas.addEventListener('touchstart', einkHandleTouchStart, { passive: false });
+  canvas.addEventListener('touchend', einkHandleTouchEnd, { passive: false });
 
   SCREEN = {
     canvas,
-    tileSize: 16,
     ctrlKey: false,
     shiftKey: false,
     metaKey: false,
@@ -371,8 +394,23 @@ async function launch() {
     inputHandler: handleSilentEvent,
     handlerStack: [],
     font: 'monospace',
-    devicePixelRatio: window.devicePixelRatio
+    devicePixelRatio: window.devicePixelRatio,
+    // e-ink layout state (see EInk.js)
+    cellW_chrome: 8,
+    cellH_chrome: 16,
+    cellH_map_base: 16,
+    cellW_map: 8,
+    cellH_map: 16,
+    mapZoom: 1,
+    mapVisibleCols: EINK_MAP_W,
+    mapVisibleRows: EINK_MAP_H,
+    page: { x: 0, y: 0 },
+    _controls: null,
+    _fontKey: null
   }
+
+  // E-ink crispness: no smoothing/interpolation on the backing store.
+  SCREEN.ctx.imageSmoothingEnabled = false;
 
   handleResizeEvent();
   requestAnimationFrame( animationTimer );

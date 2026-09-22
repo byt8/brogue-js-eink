@@ -1,16 +1,24 @@
 
 html, body {
-  background-color: black;
-  color: #aaaaaa;
+  background-color: #ffffff;
+  color: #000000;
   font-family: "DejaVuSansMono", "DejaVu Sans Mono", monospace;
   font-size: 14px;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  height: 100%;
 }
 
-
 #game {
-  position: absolute;
+  position: fixed;
   left: 0;
   top: 0;
   width: 100%;
   height: 100%;
+  touch-action: none;
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
 }

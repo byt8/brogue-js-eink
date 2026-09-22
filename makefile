@@ -3,6 +3,7 @@ FILES := Rogue.js \
 		Sqrt.js \
 		Random.js \
 		Grid.js \
+		EInk.js \
 		Platform.js \
 		PowerTables.js \
 		Globals.js \

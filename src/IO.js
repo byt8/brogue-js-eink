@@ -325,14 +325,6 @@ async function actionMenu(x, playingBack) {
       buttons[buttonCount].hotkey[0] = TRUE_COLORS_KEY;
       takeActionOurselves[buttonCount] = true;
       buttonCount++;
-			if (KEYBOARD_LABELS) {
-					sprintf(buttons[buttonCount].text, "  %s]: %s[%s] Display stealth range  ",	yellowColorEscape, whiteColorEscape, rogue.displayAggroRangeMode ? "X" : " ");
-			} else {
-					sprintf(buttons[buttonCount].text, "  [%s] Show stealth range  ",	rogue.displayAggroRangeMode ? "X" : " ");
-			}
-      buttons[buttonCount].hotkey[0] = AGGRO_DISPLAY_KEY;
-      takeActionOurselves[buttonCount] = true;
-      buttonCount++;
       // if (KEYBOARD_LABELS) {
 			// 	sprintf(buttons[buttonCount].text, "  %s[: %s%s low hitpoint warnings  ",	yellowColorEscape, whiteColorEscape, rogue.warningPauseMode ? "Disable" : "Enable");
 			// } else {
@@ -2630,28 +2622,12 @@ async function executeKeystroke( keystroke, controlKey, shiftKey) {
                                  teal, false);
 			}
 			break;
-		case AGGRO_DISPLAY_KEY:
-			rogue.displayAggroRangeMode = !rogue.displayAggroRangeMode;
-			displayLevel();
-			refreshSideBar(-1, -1, false);
-			if (rogue.displayAggroRangeMode) {
-          message(KEYBOARD_LABELS ? "Stealth range displayed. Press ']' again to hide." : "Stealth range displayed.",
-                           teal, false);
-      } else {
-          message(KEYBOARD_LABELS ? "Stealth range hidden. Press ']' again to display." : "Stealth range hidden.",
-                           teal, false);
-			}
+		case AGGRO_DISPLAY_KEY: // ']' — repurposed: page the zoomed map right
+			einkPageBy(einkPageStepX(), 0);
 			break;
-		// case WARNING_PAUSE_KEY:
-		// 	rogue.warningPauseMode = !rogue.warningPauseMode;
-		// 	if (rogue.warningPauseMode) {
-    //     message(KEYBOARD_LABELS ? "Low hitpoint warnings (paused) enabled. Press '[' again to disable." : "Low HP warnings (paused) activated.",
-    //                      teal, false);
-    //   } else {
-    //     message(KEYBOARD_LABELS ? "Low hitpoint warnings (paused) disabled. Press '[' again to enable." : "Low HP warnings (paused) deactivated.",
-    //                      teal, false);
-		// 	}
-		// 	break;
+		case '[': // freed by the WARNING_PAUSE_KEY removal — page the zoomed map left
+			einkPageBy(-einkPageStepX(), 0);
+			break;
 		case CALL_KEY:
 			await call(NULL);
 			break;
@@ -2662,6 +2638,12 @@ async function executeKeystroke( keystroke, controlKey, shiftKey) {
 		// case AUTOPLAY_KEY:
 		// 	autoPlayLevel(controlKey);
 		// 	break;
+		case PAGE_UP_KEY:
+			einkPageBy(0, -einkPageStepY());
+			break;
+		case PAGE_DOWN_KEY:
+			einkPageBy(0, einkPageStepY());
+			break;
 		case MESSAGE_ARCHIVE_KEY:
 			await displayMessageArchive();
 			break;
