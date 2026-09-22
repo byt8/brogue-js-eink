@@ -10,6 +10,27 @@ html, body {
   height: 100%;
 }
 
+/* Soft-keyboard sink (see index.html / Platform.js). It has to be a real,
+   painted, focusable element for Android/iOS to raise a keyboard -- so it is
+   1px and all but transparent rather than display:none or 0x0, both of which
+   the browser refuses to focus. */
+#keysink {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  opacity: 0.01;
+  font-size: 16px;
+  background: transparent;
+  color: transparent;
+  caret-color: transparent;
+}
+
 #game {
   position: fixed;
   left: 0;

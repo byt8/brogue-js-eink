@@ -2,7 +2,7 @@
 
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, interactive-widget=resizes-content">
   <title>Brogue-1.7.5</title>
   <link href="./app.css" rel="stylesheet">
   <script src='./Brogue.js' lang="javascript"></script>
@@ -10,6 +10,13 @@
 
 <body>
   <canvas id='game'></canvas>
+  <!-- Soft-keyboard sink. Android/iOS only raise a keyboard for a focused
+       editable element, so Platform.js focuses this from the touch handlers
+       and turns whatever it types into game keystrokes. Never seen, never
+       tabbed to, kept empty. -->
+  <input id="keysink" type="text" inputmode="text" enterkeyhint="enter"
+         autocomplete="off" autocorrect="off" autocapitalize="off"
+         spellcheck="false" tabindex="-1">
 </body>
 
 </html>

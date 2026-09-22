@@ -445,7 +445,9 @@ function einkKeepPlayerVisible() {
 // ---- on-screen controls --------------------------------------------------
 
 // Paper squares with ink borders, drawn in the bottom-right corner over
-// the menu bar. Five buttons: left / up / down / right / zoom.
+// the menu bar. Six buttons: escape / left / up / down / right / zoom.
+// (`esc` exists because a touch device has no Escape key, and Brogue needs
+// one to back out of dialogs -- the keyboard itself comes and goes with a tap.)
 function einkDrawControls() {
     const s = SCREEN;
     const ctx = s.ctx;
@@ -456,12 +458,13 @@ function einkDrawControls() {
     const btn = Math.max(30, Math.round(s.cellH_chrome * 1.4));
     const gap = Math.max(4, Math.round(btn * 0.2));
     const margin = Math.max(6, Math.round(btn * 0.3));
-    const count = 5;
+    const count = 6;
     const totalW = count * btn + (count - 1) * gap;
     const x0 = cssW - margin - totalW;
     const y0 = cssH - margin - btn;
 
     const buttons = [
+        { type: 'esc', label: 'esc' },
         { type: 'left' },
         { type: 'up' },
         { type: 'down' },
@@ -484,9 +487,10 @@ function einkDrawButton(ctx, bx, by, btn, spec, dpr) {
     ctx.lineWidth = Math.max(1, Math.round(2 * dpr));
     ctx.strokeRect(bx * dpr, by * dpr, btn * dpr, btn * dpr);
 
-    if (spec.type === 'zoom') {
+    if (spec.label) {
         ctx.fillStyle = EINK_INK;
-        einkUseFont(Math.floor(btn * 0.42));
+        // Long labels ("1.5x", "esc") need a smaller face than "1x".
+        einkUseFont(Math.floor(btn * (spec.label.length > 2 ? 0.30 : 0.42)));
         ctx.fillText(spec.label, (bx + btn / 2) * dpr, (by + btn / 2) * dpr);
         return;
     }
@@ -525,6 +529,9 @@ function einkHandleControlTap(px, py) {
     if (!c) return false;
     if (c.action === 'zoom') {
         einkToggleZoom();
+    } else if (c.action === 'esc') {
+        // Touch devices have no Escape key; feed the game the same keystroke.
+        dispatchKeystroke(ESCAPE_KEY, false, false, false);
     } else if (c.action === 'left') {
         einkPageBy(-einkPageStepX(), 0);
     } else if (c.action === 'right') {
@@ -542,6 +549,9 @@ function einkHandleControlTap(px, py) {
 
 function einkHandleTouchStart(e) {
     if (e.cancelable) e.preventDefault();
+    // A tap means "I want to type": raise the soft keyboard.  (No-op on a
+    // desktop, where the physical keyboard already reaches the document.)
+    if (typeof einkFocusKeyboard === 'function') einkFocusKeyboard();
     const t = e.changedTouches && e.changedTouches[0];
     if (!t) return;
     einkDispatchTap(t.clientX, t.clientY);

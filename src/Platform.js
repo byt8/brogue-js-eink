@@ -138,7 +138,54 @@ function animationTimer(t) {
 }
 
 
+// ---- keyboard input ------------------------------------------------------
+//
+// On a desktop the OS delivers a keypress to whatever has focus (the body by
+// default) and it bubbles to the document, so the game hears it even though
+// the page holds nothing focusable.  Android is different in two ways:
+//
+//   1. no soft keyboard ever appears unless an *editable* element has focus,
+//      and the canvas cannot be focused, so there is nothing to type into;
+//   2. once a keyboard is up, the IME reports keydown with key "Unidentified"
+//      (keyCode 229) and hands the actual character over in the `input` event
+//      instead, so keydown alone would swallow every letter.
+//
+// So index.html carries a 1px transparent <input id="keysink">.  Touch input
+// focuses it (see EInk.einkHandleTouchStart), which raises the soft keyboard,
+// and both the keydown and the input events it produces are translated into
+// the same KEYSTROKE events the rest of the game already understands.
+var KBD_SOFT = false;   // last keydown was an IME placeholder; input carries the text
+var KBD_SOFT_SHIFT = false;  // ...and whether the keyboard thought shift was down
+var KBD_SINK = null;    // the <input>, wired up in launch()
+var KBD_SEEN_HEIGHT = 0;   // tallest viewport seen (i.e. with no keyboard up)
+
+function dispatchKeystroke(key, ctrlKey, shiftKey, metaKey) {
+  if (!SCREEN) {
+    console.log('keypress', key);
+    return;
+  }
+  SCREEN.ctrlKey = !!ctrlKey;
+  SCREEN.shiftKey = !!shiftKey;
+  SCREEN.metaKey = !!metaKey;
+
+  const theEvent = rogueEvent(KEYSTROKE, key, null, !!ctrlKey, !!shiftKey);
+  theEvent.time = performance.now();
+  SCREEN.inputHandler(theEvent);
+}
+
 function handleKeyDownEvent(event) {
+  // An IME keydown carries no usable key.  Leave it strictly alone: calling
+  // preventDefault() here cancels the character, and the character is exactly
+  // what the following input event is about to deliver to us.
+  if (event.isComposing || event.keyCode === 229
+      || event.key === 'Unidentified' || event.key === 'Process') {
+    KBD_SOFT = true;
+    KBD_SOFT_SHIFT = !!event.shiftKey;
+    return;
+  }
+  KBD_SOFT = false;
+  KBD_SOFT_SHIFT = false;
+
   let key = event.key;
   if(['Ctrl', 'Alt', 'Meta', 'Shift'].includes(key)) {
       key = event.code;
@@ -160,19 +207,55 @@ function handleKeyDownEvent(event) {
     console.log('Cleared Events queue.');
   }
 
-  const theEvent = rogueEvent(KEYSTROKE, key, null, event.ctrlKey, event.shiftKey);
-  theEvent.time = performance.now();
-  if (SCREEN) {
-    SCREEN.ctrlKey = event.ctrlKey;
-    SCREEN.metaKey = event.metaKey;
-    SCREEN.shiftKey = event.shiftKey;
-    SCREEN.inputHandler(theEvent);
-  }
-  else {
-    console.log('keypress', key);
-  }
+  dispatchKeystroke(key, event.ctrlKey, event.shiftKey, event.metaKey);
   event.preventDefault();
   return false;
+}
+
+// Characters produced by the soft keyboard.  Only honoured when the keydown
+// that preceded them was the IME's placeholder (KBD_SOFT), so a physical
+// keyboard -- which is already handled in keydown -- cannot double-fire.
+function handleKeyInputEvent(event) {
+  const sink = event.target;
+  const data = event.data || '';
+  const fromSoftKeyboard = KBD_SOFT;
+  const shift = KBD_SOFT_SHIFT;
+  KBD_SOFT = false;
+  KBD_SOFT_SHIFT = false;
+
+  // Keep the sink empty: the character has been read, and a stale value would
+  // let the IME's next send be appended to it.
+  if (sink && sink.value) {
+    sink.value = '';
+  }
+
+  // Keys an IME cannot express as text arrive here instead, with no
+  // character attached: Enter comes as insertLineBreak, backspace as
+  // deleteContentBackward.  (When the keyboard does send a real keydown for
+  // them, KBD_SOFT is already false and they were handled there.)
+  if (fromSoftKeyboard && !data) {
+    if (event.inputType === 'deleteContentBackward') {
+      dispatchKeystroke(BACKSPACE_KEY, false, false, false);
+      return;
+    }
+    if (event.inputType === 'insertLineBreak') {
+      dispatchKeystroke(RETURN_KEY, false, false, false);
+      return;
+    }
+  }
+
+  if (!fromSoftKeyboard || !data) return;
+
+  for (const ch of data) {
+    // Some IMEs capitalise the first letter of "sentences" of their own
+    // accord; an unasked-for 'J' is the run command, an 'A' is autoplay.
+    // Only honour a capital letter when shift was really down.
+    let key = (ch >= 'A' && ch <= 'Z' && !shift) ? ch.toLowerCase() : ch;
+    if (key === '\n' || key === '\r') {
+      key = RETURN_KEY;
+    }
+    dispatchKeystroke(key, false, shift, false);
+  }
 }
 
 function handleKeyUpEvent(event) {
@@ -182,6 +265,51 @@ function handleKeyUpEvent(event) {
     SCREEN.shiftKey = event.shiftKey;
   }
   event.preventDefault();
+}
+
+
+// ---- raising the soft keyboard -------------------------------------------
+
+// True when the keyboard looks closed.  The visual viewport shrinks while an
+// IME is on screen, so the tallest viewport we have ever seen is our "no
+// keyboard" ruler (this holds whether or not the page asks the browser to
+// resize the layout viewport for the keyboard).
+function einkKeyboardLooksClosed() {
+  const vv = window.visualViewport;
+  const h = Math.round(vv ? vv.height : window.innerHeight);
+  if (h > KBD_SEEN_HEIGHT) KBD_SEEN_HEIGHT = h;
+  return (KBD_SEEN_HEIGHT - h) <= 120;
+}
+
+// Show the soft keyboard.  Browsers only allow this from inside a real user
+// gesture, so the touch handlers call it straight from the touch event.
+// Android keeps the sink focused when the IME is dismissed with the back
+// gesture, and focus() alone will not bring it back -- a blur/re-focus will.
+// (Throttled, so a tap on an already-open keyboard is a no-op rather than a
+// flicker.)  On a desktop this is never called.
+var KBD_LAST_RAISE = 0;
+
+function einkFocusKeyboard() {
+  const sink = KBD_SINK;
+  if (!sink) return;
+  if (document.activeElement !== sink) {
+    KBD_LAST_RAISE = performance.now();
+    try {
+      sink.focus({ preventScroll: true });
+    } catch (err) {
+      sink.focus();
+    }
+    return;
+  }
+  const now = performance.now();
+  if ((now - KBD_LAST_RAISE) < 500 || !einkKeyboardLooksClosed()) return;
+  KBD_LAST_RAISE = now;
+  sink.blur();
+  try {
+    sink.focus({ preventScroll: true });
+  } catch (err) {
+    sink.focus();
+  }
 }
 
 
@@ -376,6 +504,15 @@ async function launch() {
   document.addEventListener('keydown', handleKeyDownEvent);
   document.addEventListener('keyup', handleKeyUpEvent);
   window.addEventListener('resize', handleResizeEvent);
+
+  // Soft-keyboard sink (see the keyboard section above).  Its keydown/keyup
+  // bubble to the document listeners already registered, so only the input
+  // event -- which no physical keyboard needs -- is wired here.
+  const keySink = document.getElementById('keysink');
+  if (keySink) {
+    KBD_SINK = keySink;
+    keySink.addEventListener('input', handleKeyInputEvent);
+  }
 
   const canvas = document.getElementById('game');
   canvas.addEventListener('mousemove', handleMouseEvent);
